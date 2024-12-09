@@ -3,6 +3,7 @@
 #include <AP_HAL/AP_HAL_Boards.h>
 #include <GCS_MAVLink/GCS_config.h>
 #include <AP_RangeFinder/AP_RangeFinder_config.h>
+#include <AP_DDS/AP_DDS_config.h>
 
 #ifndef HAL_PROXIMITY_ENABLED
 #define HAL_PROXIMITY_ENABLED BOARD_FLASH_SIZE > 1024
@@ -72,4 +73,8 @@
 
 #ifndef AP_PROXIMITY_LD06_ENABLED
 #define AP_PROXIMITY_LD06_ENABLED AP_PROXIMITY_BACKEND_DEFAULT_ENABLED
+#endif
+
+#ifndef AP_PROXIMITY_ROS_ENABLED
+#define AP_PROXIMITY_ROS_ENABLED AP_DDS_ENABLED && AP_DDS_LASER_SCAN_SUB_ENABLED
 #endif
