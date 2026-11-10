@@ -246,9 +246,9 @@ float Mode::get_desired_lat_accel() const
 }
 
 // set desired location
-bool Mode::set_desired_location(const Location &destination, Location next_destination )
+bool Mode::set_desired_location(const Location &destination, Location next_destination, float arc_rad, float next_arc_rad)
 {
-    if (!g2.wp_nav.set_desired_location(destination, next_destination)) {
+    if (!g2.wp_nav.set_desired_location(destination, next_destination, arc_rad, next_arc_rad)) {
         return false;
     }
 
