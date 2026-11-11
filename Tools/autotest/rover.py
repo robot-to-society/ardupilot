@@ -1396,6 +1396,310 @@ class AutoTestRover(vehicle_test_suite.TestSuite):
         self.arm_vehicle()
         self.disarm_vehicle()
 
+        self.start_subtest("Pre-arm rejects a tight arc re-entered through a do-jump")
+        # the arc is first entered from (30, 0) with a wide 4 m radius,
+        # but the do-jump runs it a second time entered from (30, 10),
+        # where the same 180 degree arc has a 1 m radius
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 30, 8, 0, {"p1": 180}),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 10, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=2, p2=1),
+        ])
+        self.assert_prearm_failure("Item 2 arc radius 1.0 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm ignores a tight arc skipped by a do-jump")
+        # the tight arc at item 3 is never executed: the do-jump at
+        # item 2 jumps over it, and the arc that does run is wide
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=4, p2=1),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 12, 0, 0, {"p1": 90}),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 40, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 70, 0, 0, {"p1": 90}),
+        ])
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.disarm_vehicle()
+
+        self.start_subtest("Pre-arm completes with an endless do-jump loop")
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 30, 0, 0, {"p1": 90}),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=-1),
+        ])
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.disarm_vehicle()
+
+        self.start_subtest("Pre-arm rejects a tight arc after a finite do-jump loop")
+        # the loop back to item 1 runs once; execution then falls
+        # through to the arc, entered from (30, 0) with a 1.4 m radius
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=1),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 32, 0, 0, {"p1": 90}),
+        ])
+        self.assert_prearm_failure("Item 4 arc radius 1.4 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm rejects a tight arc re-entered past nav delays")
+        # the endless loop re-enters the arc from (32, 0); the commands
+        # between the jump target and the arc are non-location nav
+        # commands, which must not hide the second entry
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_DELAY, 0, 0, 0, {"p1": 1, "frame": mavutil.mavlink.MAV_FRAME_GLOBAL}),
+            (mavutil.mavlink.MAV_CMD_NAV_DELAY, 0, 0, 0, {"p1": 1, "frame": mavutil.mavlink.MAV_FRAME_GLOBAL}),
+            (mavutil.mavlink.MAV_CMD_NAV_DELAY, 0, 0, 0, {"p1": 1, "frame": mavutil.mavlink.MAV_FRAME_GLOBAL}),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 30, 0, 0, {"p1": 180}),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 32, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=2, p2=-1),
+        ])
+        self.assert_prearm_failure("Item 5 arc radius 1.0 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm rejects a tight arc in an endless do-jump loop")
+        # the first entry is wide (4 m from (30, 0)) but every later
+        # lap enters from (30, 10), a 1 m radius; the check must both
+        # follow the loop and terminate
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 30, 8, 0, {"p1": 180}),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 10, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=2, p2=-1),
+        ])
+        self.assert_prearm_failure("Item 2 arc radius 1.0 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm rejects a tight arc after a long finite do-jump loop")
+        # as the x1 loop above but with a repeat count of 10: the arc
+        # is only reached after all ten laps, and must still be found
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=10),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 32, 0, 0, {"p1": 90}),
+        ])
+        self.assert_prearm_failure("Item 4 arc radius 1.4 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm rejects a tight arc in a nested do-jump loop")
+        # an endless outer loop around a finite inner loop: the arc's
+        # first entry (from (10, 0)) is wide, but once the inner loop
+        # is exhausted the outer jump re-enters it from (32, 0)
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 30, 0, 0, {"p1": 180}),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 35, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 32, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=3, p2=10),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=2, p2=-1),
+        ])
+        self.assert_prearm_failure("Item 2 arc radius 1.0 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm accepts an arc hidden behind a long jump chain")
+        # the self-jump at item 4 chains more jumps than the mission
+        # library follows at once (64), so the mission ends there and
+        # the tight arc at item 5 is never reached
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=4, p2=1),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=4, p2=64),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 12, 0, 0, {"p1": 90}),
+        ])
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.disarm_vehicle()
+
+        self.start_subtest("Pre-arm rejects a tight arc after nested finite loops")
+        # two sequential finite jumps over the same loop body multiply
+        # out to hundreds of visits before the arc is reached; the
+        # scan must still get there, as execution does
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=20),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=20),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 32, 0, 0, {"p1": 180}),
+        ])
+        self.assert_prearm_failure("Item 5 arc radius 1.0 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm ignores an arc past the non-navigation command limit")
+        # execution abandons the search for the next navigation
+        # command after 255 non-navigation commands in a row, so the
+        # mission ends inside the do-command loop and the tight arc
+        # after it is never reached
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, p1=2),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, p1=3),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, p1=4),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=2, p2=90),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 32, 0, 0, {"p1": 180}),
+        ])
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.disarm_vehicle()
+
+        self.start_subtest("Pre-arm fails a mission too complex to check")
+        # deeply nested finite jumps multiply the scan steps past
+        # its budget; the check must fail closed rather than pass
+        # arcs it never reached
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=100),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=100),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 32, 0, 0, {"p1": 90}),
+        ])
+        self.assert_prearm_failure("Mission too complex to check arcs",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm accepts a complex mission with no arcs")
+        # the complexity limit only guards the arc check; a mission
+        # without arcs must not be refused by it
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=100),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=100),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 40, 0, 0),
+        ])
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.disarm_vehicle()
+
+        self.start_subtest("Pre-arm rejects a tight arc re-entered after position inheritance")
+        # item 8 has zero latitude/longitude, so it inherits the
+        # location before it: (30,0) on the first pass, which makes
+        # the arc radius 4.0, and (30,10) on later laps, which makes
+        # it 1.0; the scan must not stop at a repeated jump state
+        # while the inherited location still changes
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 20, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=7, p2=1),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 30, 8, 0, {"p1": 180}),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 10, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=8, p2=-1),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, x=0, y=0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=5, p2=-1),
+        ])
+        self.assert_prearm_failure("Item 5 arc radius 1.0 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm rejects an arc within the non-navigation search limit")
+        # with 83 laps the call that falls through the exhausted
+        # jump and returns the arc is the 253rd of the mission
+        # library's search calls, within its budget of 255, so
+        # execution does reach the arc and it is checked
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, p1=2),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, p1=3),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, p1=4),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=2, p2=83),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 32, 0, 0, {"p1": 180}),
+        ])
+        self.assert_prearm_failure("Item 6 arc radius 1.0 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm ignores an arc just past the non-navigation search limit")
+        # with 84 laps that call would be the 256th, one past the
+        # budget, so execution never reaches the arc
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, p1=2),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, p1=3),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, p1=4),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=2, p2=84),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 32, 0, 0, {"p1": 180}),
+        ])
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.disarm_vehicle()
+
+        self.start_subtest("Pre-arm ignores an arc behind unstartable navigation commands")
+        # Rover cannot start NAV_TAKEOFF, so it consumes the mission
+        # search budget just like a do command and the mission ends
+        # inside this loop, never reaching the arc
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, z=10),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, z=10),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, z=10),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=2, p2=90),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 32, 0, 0, {"p1": 180}),
+        ])
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.disarm_vehicle()
+
+        self.start_subtest("Pre-arm follows jump counters that are not reset")
+        # with MIS_OPTIONS bit 3 the exhausted outer jump counters
+        # are not reset, so the nested loops below finish after
+        # hundreds of visits and the scan reaches the arc, instead
+        # of multiplying past the complexity limit
+        self.set_parameter("MIS_OPTIONS", 8)
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=100),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=1, p2=100),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 32, 0, 0, {"p1": 90}),
+        ])
+        self.assert_prearm_failure("Item 5 arc radius 1.4 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+        self.set_parameter("MIS_OPTIONS", 0)
+
+        self.start_subtest("Pre-arm rejects a tight arc entered through a jump tag")
+        # the tag jump skips item 3, so the arc is entered from
+        # item 1 at (10,0), not from the skipped waypoint
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP_TAG, p1=9, p2=-1),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 10, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_JUMP_TAG, p1=9),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 12, 0, 0, {"p1": 180}),
+        ])
+        self.assert_prearm_failure("Item 5 arc radius 1.0 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
+        self.start_subtest("Pre-arm ignores an arc behind an unfound jump tag")
+        # a jump tag that does not exist ends the mission there
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP_TAG, p1=99, p2=-1),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 12, 0, 0, {"p1": 180}),
+        ])
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.disarm_vehicle()
+
+        self.start_subtest("Pre-arm rejects an arc behind script-time commands")
+        # with scripting built in, NAV_SCRIPT_TIME starts like any
+        # other navigation command and ends the mission search, so
+        # the arc after this loop is reached and checked (in a build
+        # without scripting it would consume the search budget
+        # instead, like the NAV_TAKEOFF loop above)
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_NAV_SCRIPT_TIME, p1=1),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_NAV_SCRIPT_TIME, p1=1),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_NAV_SCRIPT_TIME, p1=1),
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_JUMP, p1=2, p2=90),
+            (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 32, 0, 0, {"p1": 180}),
+        ])
+        self.assert_prearm_failure("Item 6 arc radius 1.0 < TURN_RADIUS 2.0",
+                                   other_prearm_failures_fatal=False)
+
         self.start_subtest("Pre-arm accepts a tight arc if TURN_RADIUS is zero")
         self.upload_simple_relhome_mission([
             (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 10, 0, 0),
