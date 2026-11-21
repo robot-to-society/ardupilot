@@ -646,11 +646,14 @@ float AR_WPNav::get_remaining_arc_angle_rad(const Location& origin, const Locati
 // location instead of the vehicle's stopping point.  Returns false
 // if the remaining angle cannot be determined or the location is no
 // longer on the arc
-bool AR_WPNav::get_remaining_arc_angle_rad_from(const Location& origin, const Location& dest, float arc_rad, const Location& from_loc, float& remaining_rad) const
+bool AR_WPNav::get_remaining_arc_angle_rad_from(const Location& origin, const Location& dest, float arc_rad, const Location& from_loc, float& remaining_rad, float covered_rad) const
 {
     const float arc_abs_rad = fabsf(arc_rad);
-    // whole turns cannot be recovered from the position alone
-    if (arc_abs_rad > 2.0f * M_PI) {
+    // whole turns cannot be recovered from the position alone; on
+    // arcs over 360 degrees the caller must supply the angle the
+    // track has covered so far so they can be counted (see below)
+    const bool multi_turn = arc_abs_rad > 2.0f * M_PI;
+    if (multi_turn && is_negative(covered_rad)) {
         return false;
     }
 
@@ -681,7 +684,24 @@ bool AR_WPNav::get_remaining_arc_angle_rad_from(const Location& origin, const Lo
         swept_rad += 2.0f * M_PI;
     }
 
-    if (swept_rad > arc_abs_rad) {
+    if (multi_turn) {
+        // the swept angle above is only the angle within the
+        // current turn; add the whole turns that best match the
+        // angle the track has covered so far.  An error of a whole
+        // turn here cannot distort the re-planned track: the circle
+        // through the current location and the destination is the
+        // same for remaining angles a whole turn apart, so only the
+        // number of turns flown would change
+        swept_rad += roundf((covered_rad - swept_rad) / (2.0f * M_PI)) * 2.0f * M_PI;
+        if (is_negative(swept_rad)) {
+            return false;
+        }
+        if (swept_rad >= arc_abs_rad) {
+            // at or past the destination along the arc
+            remaining_rad = 0.0f;
+            return true;
+        }
+    } else if (swept_rad > arc_abs_rad) {
         // the point is in the part of the circle the arc does not
         // cover, between the destination and the origin; the closer
         // of the two ends decides whether the arc has not been
@@ -722,7 +742,7 @@ bool AR_WPNav::replan_arc_this_leg()
     }
 
     float remaining_rad;
-    if (!get_remaining_arc_angle_rad_from(_origin, _destination, _arc_rad, current_loc, remaining_rad) ||
+    if (!get_remaining_arc_angle_rad_from(_origin, _destination, _arc_rad, current_loc, remaining_rad, _scurve_this_leg.get_arc_angle_covered_rad()) ||
         is_zero(remaining_rad)) {
         return false;
     }
@@ -754,19 +774,53 @@ bool AR_WPNav::replan_arc_this_leg()
     current_NE *= 0.01f;
     destination_NE *= 0.01f;
 
+    // on a multi-turn arc, plan the remainder about the original
+    // arc's centre instead of re-deriving the circle from the
+    // current location and the destination: their chord shrinks to
+    // nothing as the remainder approaches a whole turn, which
+    // calculate_track() treats as straight within a degree and
+    // re-derives poorly around it (as Copter plans multi-turn
+    // circles about a known centre)
+    const bool circle_track = fabsf(_arc_rad) > 2.0f * M_PI &&
+        calc_arc_geometry(_origin, _destination, _arc_rad, center_NE, radius_m);
+    if (circle_track) {
+        // calc_arc_geometry returns the centre relative to the
+        // leg's origin; convert it to the EKF frame
+        Vector2f origin_NE;
+        if (!_origin.get_vector_xy_from_origin_NE_cm(origin_NE)) {
+            return false;
+        }
+        center_NE += origin_NE * 0.01f;
+    }
+
     _origin = current_loc;
     _arc_rad = remaining_rad;
-    _scurve_this_leg.calculate_track(Vector3p{current_NE.x, current_NE.y, 0.0f},              // origin
-                                     Vector3p{destination_NE.x, destination_NE.y, 0.0f},    // destination
-                                     _arc_rad,                                      // arc angle (0 for straight track)
-                                     _pos_control.get_speed_max(),
-                                     _pos_control.get_speed_max(),  // speed up (not used)
-                                     _pos_control.get_speed_max(),  // speed down (not used)
-                                     _pos_control.get_accel_max(),  // forward back acceleration
-                                     _pos_control.get_accel_max(),  // vertical accel (not used)
-                                     _pos_control.get_lat_accel_max(),  // corner acceleration
-                                     AR_WPNAV_SNAP_MAX,             // snap
-                                     _pos_control.get_jerk_max());
+    if (circle_track) {
+        _scurve_this_leg.calculate_circle_track(Vector3p{current_NE.x, current_NE.y, 0.0f},  // origin
+                                                center_NE,                 // centre
+                                                _arc_rad,                  // arc angle (may exceed 360 degrees)
+                                                0.0f,                      // climb (not used)
+                                                _pos_control.get_speed_max(),
+                                                _pos_control.get_speed_max(),  // speed up (not used)
+                                                _pos_control.get_speed_max(),  // speed down (not used)
+                                                _pos_control.get_accel_max(),  // forward back acceleration
+                                                _pos_control.get_accel_max(),  // vertical accel (not used)
+                                                _pos_control.get_lat_accel_max(),  // corner acceleration
+                                                AR_WPNAV_SNAP_MAX,             // snap
+                                                _pos_control.get_jerk_max());
+    } else {
+        _scurve_this_leg.calculate_track(Vector3p{current_NE.x, current_NE.y, 0.0f},              // origin
+                                         Vector3p{destination_NE.x, destination_NE.y, 0.0f},    // destination
+                                         _arc_rad,                                      // arc angle (0 for straight track)
+                                         _pos_control.get_speed_max(),
+                                         _pos_control.get_speed_max(),  // speed up (not used)
+                                         _pos_control.get_speed_max(),  // speed down (not used)
+                                         _pos_control.get_accel_max(),  // forward back acceleration
+                                         _pos_control.get_accel_max(),  // vertical accel (not used)
+                                         _pos_control.get_lat_accel_max(),  // corner acceleration
+                                         AR_WPNAV_SNAP_MAX,             // snap
+                                         _pos_control.get_jerk_max());
+    }
 
     // the new leg starts at the vehicle, so the previous leg has no
     // remaining track to blend into it

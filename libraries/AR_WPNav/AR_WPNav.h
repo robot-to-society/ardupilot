@@ -149,8 +149,14 @@ protected:
     // as get_remaining_arc_angle_rad but measured from an arbitrary
     // location instead of the vehicle's stopping point.  Returns
     // false if the remaining angle cannot be determined or the
-    // location is no longer on the arc
-    bool get_remaining_arc_angle_rad_from(const Location& origin, const Location& dest, float arc_rad, const Location& from_loc, float& remaining_rad) const;
+    // location is no longer on the arc.  covered_rad, when
+    // non-negative, is the angle the current track's target has
+    // covered so far (unsigned and unwrapped, as returned by
+    // SCurve::get_arc_angle_covered_rad()); it is only used to
+    // count whole turns on arcs over 360 degrees, whose remaining
+    // angle the location alone cannot determine, and must agree
+    // with the location's turn count within half a turn
+    bool get_remaining_arc_angle_rad_from(const Location& origin, const Location& dest, float arc_rad, const Location& from_loc, float& remaining_rad, float covered_rad = -1.0f) const;
 
     // re-plan the current leg as an arc from the vehicle's current
     // location to the destination, sweeping the part of the original
