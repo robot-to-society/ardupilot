@@ -483,7 +483,33 @@ void AR_WPNav::advance_wp_target_along_track(const Location &current_loc, float 
         } else {
             // regular waypoints also require the vehicle to be within the waypoint radius or past the "finish line"
             const bool near_wp = current_loc.get_distance(_destination) <= _radius;
-            const bool past_wp = current_loc.past_interval_finish_line(_origin, _destination);
+            bool past_wp;
+            if (_arc_geometry_valid) {
+                // on an arc leg the finish line is the line through
+                // the destination perpendicular to the arc's tangent
+                // there; the chord finish line cannot be used, as a
+                // re-plan may move the origin close to the destination
+                Vector2f dest_NE, veh_NE;
+                if (_destination.get_vector_xy_from_origin_NE_cm(dest_NE) &&
+                    current_loc.get_vector_xy_from_origin_NE_cm(veh_NE)) {
+                    dest_NE *= 0.01f;
+                    veh_NE *= 0.01f;
+                    const Vector2f radial = dest_NE - _arc_center_ne_m;
+                    Vector2f tangent{-radial.y, radial.x};
+                    if (is_negative(_arc_rad)) {
+                        tangent = -tangent;
+                    }
+                    // past the line, and on the destination's side
+                    // of the centre: the line alone also runs
+                    // through the far side of the circle
+                    past_wp = (veh_NE - dest_NE).dot(tangent) >= 0.0f &&
+                              (veh_NE - _arc_center_ne_m).dot(radial) > 0.0f;
+                } else {
+                    past_wp = current_loc.past_interval_finish_line(_origin, _destination);
+                }
+            } else {
+                past_wp = current_loc.past_interval_finish_line(_origin, _destination);
+            }
             _reached_destination = near_wp || past_wp;
         }
     }
