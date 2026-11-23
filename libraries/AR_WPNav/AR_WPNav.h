@@ -137,23 +137,37 @@ protected:
     // value is positive when the vehicle is on the path's left side
     float calc_crosstrack_error(const Location& current_loc) const;
 
-    // calculate the centre (in meters relative to origin) and radius of
-    // the circle followed by an arc segment from origin to dest sweeping
-    // arc_rad (positive clockwise, negative counter-clockwise).
-    // returns false if the segment is effectively straight, either
-    // because the chord has no length or the arc angle is under a degree
+    // calculate the centre (in meters relative to origin) and radius
+    // of the circle followed by an arc segment from origin to dest
     bool calc_arc_geometry(const Location& origin, const Location& dest, float arc_rad, Vector2f& center_NE, float& radius_m) const;
 
+    // derive and keep the current leg's arc centre and radius;
+    // invalid if the circle cannot be derived from the endpoints
+    void update_arc_geometry();
+
     // as get_remaining_arc_angle_rad but measured from an arbitrary
-    // location instead of the vehicle's stopping point.  Returns
-    // false if the remaining angle cannot be determined or the
-    // location is no longer on the arc
+    // location instead of the vehicle's stopping point; false if
+    // the remaining angle cannot be determined
     bool get_remaining_arc_angle_rad_from(const Location& origin, const Location& dest, float arc_rad, const Location& from_loc, float& remaining_rad) const;
 
-    // re-plan the current leg as an arc from the vehicle's current
-    // location to the destination, sweeping the part of the original
-    // arc that remains.  Returns false if the remaining angle cannot
-    // be determined
+    // as get_remaining_arc_angle_rad_from but with the arc's circle
+    // given directly (center_NE is the centre in meters relative to
+    // origin, radius_m its radius).  covered_rad, when non-negative,
+    // is the angle the current track's target has covered so far
+    // (unsigned and unwrapped, as returned by
+    // SCurve::get_arc_angle_covered_rad()); it only counts whole
+    // turns on arcs over 360 degrees, whose remaining angle the
+    // location alone cannot determine, and must agree with the
+    // location's turn count within half a turn.  plan_from_point is
+    // set by callers that plan a track from from_loc's own bearing:
+    // for them a point behind the origin's bearing returns false
+    // (the remaining angle from there does not count the part
+    // behind the entry, and it is not extended); other callers
+    // treat such a point as not having entered the arc yet
+    bool get_remaining_arc_angle_rad_about(const Location& origin, const Location& dest, float arc_rad, const Vector2f& center_NE, float radius_m, const Location& from_loc, float& remaining_rad, float covered_rad = -1.0f, bool plan_from_point = false) const;
+
+    // re-plan the current leg about the circle kept when the leg
+    // was set up; false if there is no kept circle
     bool replan_arc_this_leg();
 
     // bearing in centidegrees of the arc's tangent at its start
@@ -201,6 +215,9 @@ protected:
     bool _pivot_at_next_wp;         // true if vehicle should pivot at next waypoint
     float _arc_rad;                 // arc angle (in radians) of the current leg, zero for straight legs
     float _next_arc_rad;            // arc angle (in radians) of the next leg, zero for straight legs
+    Vector2f _arc_center_ne_m;      // centre of the current leg's arc, in meters relative to the EKF origin
+    float _arc_radius_m;            // radius of the current leg's arc in meters
+    bool _arc_geometry_valid;       // true if the centre and radius above describe the current leg's arc
     bool _overspeed_enabled;        // if true scurve's position target will speedup to catch vehicles travelling faster than WP_SPEED
     float _track_scalar_dt;         // time scaler to ensure scurve target doesn't get too far ahead of vehicle
 
