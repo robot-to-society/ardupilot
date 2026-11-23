@@ -504,6 +504,9 @@ class AutoTestRover(vehicle_test_suite.TestSuite):
         stopping point offset from the original circle also moves the
         fitted centre, by about offset / (2 tan(remaining/2)); allow
         for both plus tracking error'''
+        if remaining_deg <= 0.0:
+            raise NotAchievedException(
+                "Stop staged with no arc remaining; expected a mid-arc stop")
         return stop_offset_m * (1.0 + 0.5 / math.tan(math.radians(remaining_deg) * 0.5)) + 0.75
 
     def arc_ne_from_latlon(self, lat, lng):
@@ -646,6 +649,31 @@ class AutoTestRover(vehicle_test_suite.TestSuite):
             raise NotAchievedException(
                 "Arc swept only %.1f deg of %.1f deg commanded" %
                 (math.degrees(total_rad), theta_deg))
+        if abs(total_rad) > abs(expected_rad) + math.radians(60):
+            raise NotAchievedException(
+                "Arc swept %.1f deg, more than the %.1f deg commanded" %
+                (math.degrees(total_rad), theta_deg))
+
+    def wait_arc_swept(self, center_ne, swept_deg, timeout=120):
+        '''wait until the position samples collected on the current
+        mission item show the vehicle's bearing about center_ne has
+        swept at least swept_deg (in whichever direction it is
+        moving) since this call. The collected samples are used
+        rather than polled positions: at autotest speedup a polled
+        position can be a large fraction of a turn stale, which
+        corrupts a running total'''
+        seq = self._arc_state["seq"]
+        start_deg = self.arc_swept_deg(self._arc_samples, seq, center_ne)
+        swept = 0.0
+        tstart = self.get_sim_time()
+        while self.get_sim_time() - tstart < timeout:
+            self.delay_sim_time(0.5, reason="waiting for arc swept angle")
+            swept = self.arc_swept_deg(self._arc_samples, seq, center_ne) - start_deg
+            if abs(swept) >= swept_deg:
+                return swept
+        raise NotAchievedException(
+            "Arc swept only %.1f deg in %us, wanted %.1f" %
+            (swept, timeout, swept_deg))
 
     def arc_speed_limit_samples(self):
         '''drive a tight 180 degree arc with ATC_TURN_MAX_G set low and
@@ -1468,6 +1496,131 @@ class AutoTestRover(vehicle_test_suite.TestSuite):
             raise NotAchievedException(
                 "Off-circle resume swept %.1f degrees about the original centre, "
                 "expected a straight run" % swept_deg)
+
+        self.start_subtest("Multi-turn arc re-plans when its speed is reduced")
+        for theta_deg in (540, -540):
+            self.set_parameter("WP_SPEED", 2)
+            self.start_driving_arc_mission([
+                (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+                (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 30, 8, 0, {"p1": theta_deg}),
+                (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 8, 0),
+            ])
+            self.reset_arc_samples()
+            self.context_clear_collection('STATUSTEXT')
+            self.wait_current_waypoint(2, timeout=120)
+            tstart = self.get_sim_time()
+            while self.get_sim_time() - tstart < 120:
+                loc = self.get_location()
+                (n, e) = self.arc_ne_from_latlon(loc.lat, loc.lng)
+                if math.hypot(n - 30, e - 0) > 3.5:
+                    break
+                self.delay_sim_time(0.5, reason="waiting to get partway around the arc")
+            else:
+                raise NotAchievedException("Vehicle did not get partway around the arc")
+            # dropping the speed mid-arc must re-plan the rest of
+            # the arc, counting the whole turns the track has
+            # already covered; without the re-plan an arc over 360
+            # degrees was only re-timed and left the circle
+            self.set_parameter("WP_SPEED", 0.5)
+            self.wait_waypoint(2, 3, max_dist_to_final_wp_m=5, timeout=400)
+            self.wait_statustext("Mission Complete", timeout=60, check_context=True)
+            self.disarm_vehicle()
+            samples = self._arc_samples
+            # the re-planned remainder flies the original circle;
+            # what deviation remains at 0.5 m/s is the low-speed
+            # tracking offset, one to two metres on this geometry
+            self.check_arc_deviation(samples, 2, (30, 0), (30, 8), theta_deg, max_dev_m=2.0)
+            self.check_arc_swept_angle(samples, 2, (30, 0), (30, 8), theta_deg)
+            self.set_parameter("WP_SPEED", 2)
+
+        self.start_subtest("Multi-turn arc re-plans when its speed is reduced twice")
+        for theta_deg in (540, -540):
+            self.set_parameter("WP_SPEED", 2)
+            self.start_driving_arc_mission([
+                (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+                (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 30, 8, 0, {"p1": theta_deg}),
+                (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 8, 0),
+            ])
+            self.reset_arc_samples()
+            self.context_clear_collection('STATUSTEXT')
+            self.wait_current_waypoint(2, timeout=120)
+            # the first drop leaves a remainder just over a whole
+            # turn; a second drop soon after must re-plan on the
+            # same circle, not one re-derived from the chord
+            self.wait_arc_swept((30, 4), 170, timeout=120)
+            self.set_parameter("WP_SPEED", 1.0)
+            self.wait_arc_swept((30, 4), 15, timeout=60)
+            self.set_parameter("WP_SPEED", 0.5)
+            self.wait_waypoint(2, 3, max_dist_to_final_wp_m=5, timeout=400)
+            self.wait_statustext("Mission Complete", timeout=60, check_context=True)
+            self.disarm_vehicle()
+            samples = self._arc_samples
+            self.check_arc_deviation(samples, 2, (30, 0), (30, 8), theta_deg, max_dev_m=2.0)
+            self.check_arc_swept_angle(samples, 2, (30, 0), (30, 8), theta_deg)
+            self.set_parameter("WP_SPEED", 2)
+
+        self.start_subtest("Arc over two turns re-plans after a full turn")
+        for theta_deg in (900, -900):
+            self.set_parameter("WP_SPEED", 2)
+            self.start_driving_arc_mission([
+                (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+                (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 30, 8, 0, {"p1": theta_deg}),
+                (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 8, 0),
+            ])
+            self.reset_arc_samples()
+            self.context_clear_collection('STATUSTEXT')
+            self.wait_current_waypoint(2, timeout=120)
+            # drop with more than a full turn already swept and
+            # more than a full turn remaining, so counting the whole
+            # turns is what finds the remaining angle
+            self.wait_arc_swept((30, 4), 500, timeout=180)
+            self.set_parameter("WP_SPEED", 0.5)
+            self.wait_waypoint(2, 3, max_dist_to_final_wp_m=5, timeout=400)
+            self.wait_statustext("Mission Complete", timeout=60, check_context=True)
+            self.disarm_vehicle()
+            samples = self._arc_samples
+            self.check_arc_deviation(samples, 2, (30, 0), (30, 8), theta_deg, max_dev_m=2.0)
+            self.check_arc_swept_angle(samples, 2, (30, 0), (30, 8), theta_deg)
+            self.set_parameter("WP_SPEED", 2)
+
+        self.start_subtest("Re-planned multi-turn arc still reaches its exit")
+        for theta_deg in (540, -540):
+            for drop_deg in (90, 180, 270):
+                self.set_parameter("WP_SPEED", 2)
+                self.set_parameter("WP_RADIUS", 0.5)
+                self.start_driving_arc_mission([
+                    (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 30, 0, 0),
+                    (mavutil.mavlink.MAV_CMD_NAV_ARC_WAYPOINT, 30, 8, 0, {"p1": theta_deg}),
+                ])
+                self.reset_arc_samples()
+                self.context_clear_collection('STATUSTEXT')
+                self.wait_current_waypoint(2, timeout=120)
+                self.wait_arc_swept((30, 4), drop_deg, timeout=120)
+                self.set_parameter("WP_SPEED", 0.5)
+                # the arc is the last item and WP_RADIUS is small,
+                # so the mission only completes if the re-planned
+                # track ends at the exit: a track shifted by the
+                # vehicle's offset from the circle, or ending short
+                # of the exit, leaves the vehicle short of it. The
+                # drop is staged at several points of the arc
+                # because where a shifted track ends relative to
+                # the exit depends on the angle remaining
+                self.wait_statustext("Mission Complete", timeout=300, check_context=True)
+                self.disarm_vehicle()
+                samples = self._arc_samples
+                self.check_arc_deviation(samples, 2, (30, 0), (30, 8), theta_deg, max_dev_m=2.0)
+                self.check_arc_swept_angle(samples, 2, (30, 0), (30, 8), theta_deg)
+                # and the vehicle itself reached the exit's bearing
+                # about the centre rather than stopping short of it
+                loc = self.get_location()
+                (n, e) = self.arc_ne_from_latlon(loc.lat, loc.lng)
+                bearing_deg = math.degrees(math.atan2(e - 4, n - 30))
+                err_deg = abs((bearing_deg - 90 + 180) % 360 - 180)
+                if err_deg > 15:
+                    raise NotAchievedException(
+                        "Vehicle stopped %.1f deg from the exit bearing" % err_deg)
+                self.set_parameter("WP_SPEED", 2)
+                self.set_parameter("WP_RADIUS", 2)
 
         self.context_pop()
 
